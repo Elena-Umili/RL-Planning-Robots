@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.nn import L1Loss
+
 from system_conf import CODE_SIZE, ACTION_SIZE, DISCRETE_CODES
 
 
@@ -43,7 +45,7 @@ class Transition(nn.Module):
         self.optimizer = optim.Adam(self.parameters(), lr=0.0001)
 
     def forward_one_step(self, s, action):
-        x = self.encoder(s, 50, 50)
+        x = self.encoder(s, DISCRETE_CODES)
         _, x_prime_hat = self.transition_delta(x, action)
 
         return x_prime_hat
@@ -56,7 +58,7 @@ class Transition(nn.Module):
 
     def one_step_loss(self, s, a, s_prime):
        lmse = nn.MSELoss()
-       x_prime = self.encoder(s_prime, 50, 50)
+       x_prime = self.encoder(s_prime, DISCRETE_CODES)
        x_prime_hat = self.forward_one_step(s,a)
 
        error_x = lmse(x_prime, x_prime_hat)
@@ -71,7 +73,7 @@ class Transition(nn.Module):
 
        one_step_loss = self.one_step_loss(s, a, s_prime)
 
-       x_prime_prime = self.encoder(s_prime_prime, 50, 50)
+       x_prime_prime = self.encoder(s_prime_prime, DISCRETE_CODES)
        x_prime_prime_hat = self.forward_two_step(s,a, a_prime)
 
        error_x = lmse(x_prime_prime, x_prime_prime_hat)
@@ -81,3 +83,33 @@ class Transition(nn.Module):
 
        return one_step_loss + error_x + error_s
 
+    ############## TRIPLET LOSS per imparare uno spazio metrico
+    # farla con solo l'encoder??
+    def triplet_loss_encoder(self, s, s_prime, s_prime_prime, margin):
+        dist = torch.nn.L1Loss()
+        dist_pos = dist(self.encoder(s), self.encoder(s_prime))
+        dist_neg = dist(self.encoder(s), self.encoder(s_prime_prime))
+        current_margin = dist_neg - dist_pos
+        return torch.nn.functional.relu(- current_margin + margin)
+
+    #o con la one step loss??
+    def triplet_loss_transition_ome_step(self, s, a, s_prime, a_prime, margin):
+        dist = torch.nn.L1Loss()
+        x = self.encoder(s)
+        x_prime = self.forward_one_step(s,a)
+        x_prime_prime = self.forward_one_step(s_prime, a_prime)
+        dist_pos = dist(x, x_prime)
+        dist_neg = dist(x, x_prime_prime)
+        current_margin = dist_neg - dist_pos
+        return torch.nn.functional.relu(- current_margin + margin)
+
+    #o con la two step loss??
+    def triplet_loss_transition_two_step(self, s, a, a_prime, margin):
+        dist = torch.nn.L1Loss()
+        x = self.encoder(s)
+        x_prime = self.forward_one_step(s,a)
+        x_prime_prime = self.forward_two_step(s, a, a_prime)
+        dist_pos = dist(x, x_prime)
+        dist_neg = dist(x, x_prime_prime)
+        current_margin = dist_neg - dist_pos
+        return torch.nn.functional.relu(- current_margin + margin)

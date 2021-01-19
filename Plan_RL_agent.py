@@ -11,8 +11,6 @@ from Autoencoder import Encoder, Decoder
 from Node import Node
 from system_conf import ACTION_SIZE, CODE_SIZE, Q_HIDDEN_NODES, BATCH_SIZE, REW_THRE, WINDOW, MODELS_DIR
 from transition_model import Transition, TransitionDelta
-from torchsummary import summary
-
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -24,30 +22,9 @@ def to_categorical(y, num_classes):
     """ 1-hot encodes a tensor """
     return np.eye(num_classes, dtype='uint8')[y]
 
-
-def normalize_state_Lunar_Lander(vec):
-    min_vec = [-0.9948723, -0.25610653, -4.6786265, -1.7428349, -1.9317414, -2.0567605, 0.0, 0.0]
-    max_vec = [0.99916536, 1.5253401, 3.9662757, 0.50701684, 2.3456542, 2.0852647, 1.0, 1.0]
-    for i in range(len(vec)):
-        vec[i] = (vec[i] - min_vec[i]) / (max_vec[i] - min_vec[i])
-        vec[i] = min(vec[i], 1)
-        vec[i] = max(vec[i], 0)
-    return vec
-
-
-class plan_node():
-    def __init__(self, code_state, value):
-        self.code_state = code_state
-        self.value = value
-        self.action_vec = []
-
-    def add_action(self, a):
-        self.action_vec.extend(a)
-
-
 class Plan_RL_agent:
 
-    def __init__(self, env, buffer, load_models = False, epsilon=0.75, Q_hidden_nodes = Q_HIDDEN_NODES, batch_size= BATCH_SIZE, rew_thre = REW_THRE, window = WINDOW, path_to_the_models = MODELS_DIR):
+    def __init__(self, env, buffer, load_models = False, epsilon=0.5, Q_hidden_nodes = Q_HIDDEN_NODES, batch_size= BATCH_SIZE, rew_thre = REW_THRE, window = WINDOW, path_to_the_models = MODELS_DIR):
 
         self.path_to_the_models = path_to_the_models
         self.env = env
@@ -87,10 +64,17 @@ class Plan_RL_agent:
         v0 = self.network.get_enc_value(x)
         return torch.max(v0).to('cpu').detach().numpy()
 
+    def certainty(self, x):
+        x_p = self.encoder(self.decoder(x))
+        distance = torch.nn.L1Loss()
+        c = 1 - distance(x, x_p).item()
+        return c
+
+
     def findPlan(self, node):
         # caso base
         if node.sons == []:
-            return [node.a], node.v
+            return [node.a], node.v*node.c
 
         smax = -10000
         bestp = []
@@ -102,22 +86,23 @@ class Plan_RL_agent:
                 smax = s
                 bestp = p
 
-        return [node.a] + bestp, node.v + smax
+        return [node.a] + bestp, node.v*node.c + smax
 
     def limited_expansion(self, node, depth):  # , A): # , expandFunc, vFunc):
         if depth == 0:
             return
 
         for a in self.A:
-            s_prime = self.expandFunc(node.x, a)
-            node.expand(s_prime, self.vFunc(s_prime), a)
+            x_prime = self.expandFunc(node.x, a)
+
+            node.expand(x_prime, self.vFunc(x_prime), a, self.certainty(node.x) * self.certainty(x_prime))
 
         for i in range(len(node.sons)):
             self.limited_expansion(node.sons[i], depth - 1)  # , A) # expandFunc, vFunc)
 
     def planner_action(self, depth=2):
-        if np.random.random() < 0.05:
-            return np.random.choice(self.action_size)
+        #if np.random.random() < 0.05:
+        #    return np.random.choice(self.action_size)
         origin_code = self.encoder(torch.from_numpy(self.s_0).type(torch.FloatTensor))
         origin_value = self.vFunc(origin_code)
         root = Node(origin_code, origin_value, to_categorical(0, self.action_size))
@@ -134,54 +119,75 @@ class Plan_RL_agent:
                 return True
         return False
 
-    def take_step(self, mode='train'):
+    def take_step(self, mode='train', horizon = 0):
 
         #actions = ['N', 'E', 'S', 'W']                              # <-----decomment for maze
         #s_1, r, done, _ = self.env.step(actions[self.action])       #
-        s_1, r, done, _ = self.env.step(self.action)
+        s, r, done, _ = self.env.step(self.action)
 
-        # enc_s1 = self.encoder(torch.from_numpy(np.asarray(s_1)).type(torch.FloatTensor))
-        # enc_s0 = self.encoder(torch.from_numpy(np.asarray(self.s_0)).type(torch.FloatTensor).to('cuda'))
+
+        '''
+        enc_s1 = self.encoder(torch.from_numpy(np.asarray(s_1)).type(torch.FloatTensor))
+        enc_s0 = self.encoder(torch.from_numpy(np.asarray(self.s_0)).type(torch.FloatTensor).to('cuda'))
         # print("Reward = ", r)
-        # if(self.is_diff(enc_s0,enc_s1)):
+        if(self.is_diff(enc_s0,enc_s1)):
         # print("step passati = ", self.step_count - self.timestamp)
         # self.timestamp = self.step_count
+        '''
+        #self.buffer.append(self.s_0, self.action, r, done, s_1)
 
-        self.buffer.append(self.s_0, self.action, r, done, s_1)
+        if self.a_1 != -1:
+            #                  (  s_0     , a_1   ,   r_1    ,    d_1    ,    s_1    ,    a_2  ,r_2, d_2,s_2)
+            self.buffer.append(self.s_0, self.a_1, self.r_1, self.done_1, self.s_1, self.action, r, done, s )
+            self.s_0 = self.s_1.copy()
+        self.a_1 = self.action
+        self.r_1 = r
+        self.done_1 = done
+        self.s_1 = s
+
+
         # self.cum_rew = 0
 
         if mode == 'explore':
             self.action = self.env.action_space.sample()
         else:
-            # self.action = self.network.get_action(self.s_0)
-            self.action = self.planner_action(depth=1)
-        '''  # ADAPTIVE HORIZON
-          if len(self.mean_training_rewards) < 1:
-            self.action = self.env.action_space.sample()
-          else:
-                if self.mean_training_rewards[-1] < -5:
-                  self.action = self.env.action_space.sample()
-                else:
-                  if self.mean_training_rewards[-1] < -3:
-                    self.action = self.network.get_action(self.s_0)
-                  else:
-                    if self.mean_training_rewards[-1] < -2:
-                      self.action = self.planner_action(depth= 1) #comment for Q-learning
-                    else:
-                      if self.mean_training_rewards[-1] < -1:
-                        self.action = self.planner_action(depth= 1)
-                      else:
-                        self.planner_action(depth= 1)
+            #self.action = self.network.get_action(self.s_0)
 
-        '''
+            if horizon != 0:
+              self.action = self.planner_action(depth=horizon)
+            else:
+                # ADAPTIVE HORIZON
+                if len(self.mean_training_rewards) < 1:
+                    self.action = self.env.action_space.sample()
+                else:
+                    if self.mean_training_rewards[-1] < -5:
+                        self.action = self.env.action_space.sample()
+                    else:
+                        if self.mean_training_rewards[-1] < -3:
+                            self.action = self.network.get_action(self.s_0)
+                        else:
+                            if self.mean_training_rewards[-1] < -2:
+                                self.action = self.planner_action(depth= 1) #comment for Q-learning
+                            else:
+                                if self.mean_training_rewards[-1] < -1:
+                                    self.action = self.planner_action(depth= 2)
+                                else:
+                                    self.planner_action(depth= 3)
+
         self.rewards += r
 
-        self.s_0 = s_1.copy()
 
         self.step_count += 1
         if done:
             self.s_0 = self.env.reset()
+            self.a_1 = -1
         return done
+
+    def monitor_replanning(self, horizon):
+        done = False
+        while not done:
+            done = self.take_step(horizon = horizon)
+
 
     # Implement DQN training algorithm
     def train(self, gamma=0.99, max_episodes=400,
@@ -193,14 +199,17 @@ class Plan_RL_agent:
         #self.different_codes = verifyCodes(self.encoder, 5, 5, True, True)
         #showDistancesFromGoal(self.encoder, 5, 5, [4, 4])
 
+        self.s_0 = self.env.reset()
+        self.a_1 = -1
         # Populate replay buffer
         while self.buffer.burn_in_capacity() < 1:
             self.take_step(mode='explore')
-            print("explore")
+            #print("explore")
         ep = 0
         training = True
         while training:
             self.s_0 = self.env.reset()
+            self.a_1 = -1
             self.rewards = 0
             done = False
             while done == False:
@@ -218,7 +227,7 @@ class Plan_RL_agent:
                     done = self.take_step(mode='explore')
                     # print("explore")
                 else:
-                    done = self.take_step(mode='train')
+                    done = self.take_step(mode='train', horizon=1)
                     # print("train")
                 # Update network
                 if self.step_count % network_update_frequency == 0:
@@ -243,7 +252,7 @@ class Plan_RL_agent:
                     print(
                         "\rEpisode {:d} Mean Rewards {:.2f}  Episode reward = {:.2f}   {} different codes \t\t".format(
                             ep, mean_rewards, self.rewards, self.different_codes), end="")
-                    self.f.write(str(mean_rewards) + "\n")
+                    #self.f.write(str(mean_rewards) + "\n")
                     #print("losses ", self.transition_losses[-self.window:])
                     # plot
                     '''
@@ -295,7 +304,7 @@ class Plan_RL_agent:
 
     def calculate_loss(self, batch):
 
-        states, actions, rewards, dones, next_states = [i for i in batch]
+        states, actions, rewards, dones, next_states, _, _, _, _ = [i for i in batch]
         rewards_t = torch.FloatTensor(rewards).to(device=self.network.device).reshape(-1, 1)
         actions_t = torch.LongTensor(np.array(actions)).reshape(-1, 1).to(
             device=self.network.device)
@@ -328,8 +337,7 @@ class Plan_RL_agent:
         return loss
 
     def pred_update(self, batch):
-        loss_function = nn.MSELoss()
-        states, actions, rewards, dones, next_states = [i for i in batch]
+        states, actions, rewards, dones, next_states, _, _, _, _ = [i for i in batch]
         cat_actions = []
 
         # modifica struttura actions
@@ -348,10 +356,49 @@ class Plan_RL_agent:
             next_states = np.array([np.ravel(s) for s in next_states])
         next_states = torch.FloatTensor(next_states).to(device)
 
-        error_z, x_prime_hat = self.transition(states, a_t, next_states)
-        L = self.transition.loss_function_transition(error_z, next_states, x_prime_hat)
+        L = self.transition.one_step_loss(states, a_t, next_states)
         L.backward()
-        self.transition_losses.append(L)
+        #self.transition_losses.append(L)
+        self.transition.optimizer.step()
+        return
+
+
+    def pred_update_two_steps(self, batch):
+        loss_function = nn.MSELoss()
+        states, actions, rewards, dones, next_states, actions_2, rewards_2, dones_2, next_states_2 = [i for i in batch]
+        cat_actions = []
+        cat_actions_2 = []
+
+        # modifica struttura actions
+        for act in actions:
+            cat_actions.append(np.asarray(to_categorical(act, self.action_size)))
+        cat_actions = np.asarray(cat_actions)
+        a_t = torch.FloatTensor(cat_actions).to(device)
+
+        # modifica struttura actions_2
+        for act in actions:
+            cat_actions_2.append(np.asarray(to_categorical(act, self.action_size)))
+        cat_actions_2 = np.asarray(cat_actions)
+        a_t_2 = torch.FloatTensor(cat_actions_2).to(device)
+
+        # Modifiche struttura states
+        if type(states) is tuple:
+            states = np.array([np.ravel(s) for s in states])
+        states = torch.FloatTensor(states).to(device)
+
+        # Modifiche struttura next_states
+        if type(next_states) is tuple:
+            next_states = np.array([np.ravel(s) for s in next_states])
+        next_states = torch.FloatTensor(next_states).to(device)
+
+        # Modifiche struttura next_states
+        if type(next_states_2) is tuple:
+            next_states_2 = np.array([np.ravel(s) for s in next_states_2])
+        next_states_2 = torch.FloatTensor(next_states_2).to(device)
+
+        L = self.transition.two_step_loss(states, a_t, next_states, a_t_2, next_states_2)
+        L.backward()
+        #self.transition_losses.append(L)
         self.transition.optimizer.step()
         return
 
@@ -364,7 +411,7 @@ class Plan_RL_agent:
 
         self.transition.optimizer.zero_grad()
         batch2 = self.buffer.sample_batch(batch_size=self.batch_size)
-        self.pred_update(batch2)
+        self.pred_update_two_steps(batch2)
 
         if self.network.device == 'cuda':
             self.update_loss.append(loss.detach().cpu().numpy())

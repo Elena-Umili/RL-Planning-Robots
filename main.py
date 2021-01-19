@@ -32,7 +32,7 @@ if __name__ == '__main__':
     er_buf = experienceReplayBuffer(burn_in=1000)
 
     random.seed(8)
-    env = gym.make("maze-random-5x5-v0")
+    env = gym.make("Acrobot-v1")
     ddqn = Plan_RL_agent(env=env, buffer=er_buf, batch_size=64)
     ddqn.train()
 

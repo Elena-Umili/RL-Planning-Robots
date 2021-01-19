@@ -3,7 +3,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 import warnings
-
+from system_conf import STATE_SIZE
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", category=UserWarning)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -16,31 +16,31 @@ class Net(nn.Module):
         # self.encoder.load_state_dict(torch.load('lunar_models/code100_enc.pt'))
 
         self.layers0 = nn.Linear(
-            code_size,
+            code_size,  #  <-------------------------comment for Q-learning
+            #STATE_SIZE,
             n_hidden_nodes,
             bias=bias).to(device)
         self.layers1 = nn.ReLU().to(device)
 
         self.layers2 = nn.Linear(
             n_hidden_nodes,
-            # int(n_hidden_nodes/2), #<-----comment for maze
-            n_outputs,
+            int(n_hidden_nodes), #<-----comment for maze
             bias=bias).to(device)
 
         self.layers3 = nn.ReLU()
-        '''
+
         self.layers4 = nn.Linear(
-                    int(n_hidden_nodes/2),
-                    int(n_hidden_nodes/4),
+                    int(n_hidden_nodes),
+                    int(n_hidden_nodes),
                     bias=bias).to('cuda')
         self.layers5 = nn.ReLU().to('cuda')
 
         self.layers6 = nn.Linear(
-                    int(n_hidden_nodes/4),
+                    int(n_hidden_nodes),
                     n_outputs,
                     bias=bias).to('cuda')
-        self.layers7 = nn.ReLU()
-        '''
+        #self.layers7 = nn.ReLU()
+
 
     def forward(self, data):
         out = self.encoder(data.to(device))  # <-------------------------comment for Q-learning
@@ -49,10 +49,10 @@ class Net(nn.Module):
         out = self.layers1(out).to(device)
         out = F.tanh(self.layers2(out).to(device))
         out = self.layers3(out).to(device)
-        # out = self.layers4(out).to('cuda')
-        # out = self.layers5(out).to('cuda')
-        # out = self.layers6(out).to('cuda')
-        # out = self.layers7(out)
+        out = self.layers4(out).to('cuda')
+        out = self.layers5(out).to('cuda')
+        out = self.layers6(out).to('cuda')
+        #out = self.layers7(out)
         return out
 
     def enc_forw(self, enc_data):
@@ -60,10 +60,10 @@ class Net(nn.Module):
         out = self.layers1(out).to(device)
         out = self.layers2(out).to(device)
         out = self.layers3(out).to(device)
-        # out = self.layers4(out).to('cuda')
-        # out = self.layers5(out).to('cuda')
-        # out = self.layers6(out).to('cuda')
-        # out = self.layers7(out)
+        out = self.layers4(out).to('cuda')
+        out = self.layers5(out).to('cuda')
+        out = self.layers6(out).to('cuda')
+        #out = self.layers7(out)
         return out
 
 
@@ -78,6 +78,7 @@ class QNetwork(nn.Module):
         n_outputs = env.action_space.n
 
         self.network = Net(encoder.code_size, n_hidden_nodes, n_outputs, bias, encoder)
+        print(self.network)
         # Set device for GPU's
         if self.device == 'cuda':
             self.network.cuda()
@@ -94,7 +95,7 @@ class QNetwork(nn.Module):
         return action
 
     def greedy_action(self, state):
-        qvals, _ = self.get_qvals(state)
+        qvals = self.get_qvals(state)
         return torch.max(qvals, dim=-1)[1].item()
 
     def get_qvals(self, state):

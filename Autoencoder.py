@@ -11,8 +11,9 @@ class Encoder(nn.Module):
         self.code_size = code_size
         self.enc_linear_1 = nn.Linear(INPUT_SIZE, INPUT_SIZE * 4).to(device)
         self.enc_linear_2 = nn.Linear(INPUT_SIZE * 4, INPUT_SIZE * 8 ).to(device)
-        self.enc_linear_3 = nn.Linear(INPUT_SIZE * 16, INPUT_SIZE * 16).to(device)
+        self.enc_linear_3 = nn.Linear(INPUT_SIZE * 8, INPUT_SIZE * 16).to(device)
         self.enc_linear_4 = nn.Linear(INPUT_SIZE * 16, code_size).to(device)
+        print(self)
 
     def forward(self, data, discretize = DISCRETE_CODES):
         code = (self.enc_linear_1(data.to(device)))
@@ -32,16 +33,18 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, code_size = CODE_SIZE):
         super().__init__()
-        self.dec_linear_1 = nn.Linear(code_size, INPUT_SIZE * 4).to(device)
-        self.dec_linear_2 = nn.Linear(INPUT_SIZE * 4, INPUT_SIZE).to(device)
-        # self.dec_linear_3 = nn.Linear(INPUT_SIZE * 8, INPUT_SIZE * 4).to('cuda')
-        # self.dec_linear_4 = nn.Linear(INPUT_SIZE * 4, INPUT_SIZE).to('cuda')
+        self.dec_linear_1 = nn.Linear(code_size, INPUT_SIZE * 16).to(device)
+        self.dec_linear_2 = nn.Linear(INPUT_SIZE * 16, INPUT_SIZE*8).to(device)
+        self.dec_linear_3 = nn.Linear(INPUT_SIZE * 8, INPUT_SIZE * 4).to('cuda')
+        self.dec_linear_4 = nn.Linear(INPUT_SIZE * 4, INPUT_SIZE).to('cuda')
+        print(self)
+
 
     def forward(self, code):
         out = (self.dec_linear_1(code)).to(device)
         out = F.selu(self.dec_linear_2(out)).to(device)
-        # out = F.selu(self.dec_linear_3(out)).to('cuda')
-        # out = (self.dec_linear_4(out)).to('cuda')
+        out = F.selu(self.dec_linear_3(out)).to('cuda')
+        out = (self.dec_linear_4(out)).to('cuda')
         return out
 
 
