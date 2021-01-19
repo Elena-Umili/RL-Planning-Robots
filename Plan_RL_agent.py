@@ -9,8 +9,10 @@ from QNetwork import QNetwork
 from Autoencoder import Encoder, Decoder
 # from testExplainability import verifyCodes, showDistancesFromGoal
 from Node import Node
-from system_conf import ACTION_SIZE, CODE_SIZE, Q_HIDDEN_NODES, BATCH_SIZE, REW_THRE, WINDOW, MODELS_DIR
+from system_conf import ACTION_SIZE, CODE_SIZE, Q_HIDDEN_NODES, BATCH_SIZE, REW_THRE, WINDOW, MODELS_DIR, MARGIN
 from transition_model import Transition, TransitionDelta
+import matplotlib.pyplot as plt
+import random
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -57,8 +59,8 @@ class Plan_RL_agent:
         #self.transition_losses = []
 
     def expandFunc(self, x, a):
-        _, s_prime = self.trans_delta(x, torch.from_numpy(a).type(torch.FloatTensor).to(device))
-        return s_prime
+        _, x_prime = self.trans_delta(x, torch.from_numpy(a).type(torch.FloatTensor).to(device))
+        return x_prime
 
     def vFunc(self, x):
         v0 = self.network.get_enc_value(x)
@@ -76,40 +78,51 @@ class Plan_RL_agent:
         if node.sons == []:
             return [node.a], node.v*node.c
 
-        smax = -10000
-        bestp = []
+        somme_values = []
+        plans = []
         for n in node.sons:
             p, s = self.findPlan(n)
+            plans.append(p)
+            somme_values.append(s)
             # print("plan p", p)
             # print("plan p", s)
-            if s > smax:
-                smax = s
-                bestp = p
 
-        return [node.a] + bestp, node.v*node.c + smax
+        ###### evaluate plans
+        #se più piani hanno valore massimo ne scelgo uno fra di essi random
+        smax = max(somme_values)
+        indices_max = [i for i, j in enumerate(somme_values) if j == smax]
+        k = random.choice(indices_max)
 
-    def limited_expansion(self, node, depth):  # , A): # , expandFunc, vFunc):
+        bestp = plans[k]
+
+        return [node.a] + bestp, node.v * node.c + smax
+
+    def limited_expansion(self, node, depth):
         if depth == 0:
             return
 
         for a in self.A:
             x_prime = self.expandFunc(node.x, a)
 
-            node.expand(x_prime, self.vFunc(x_prime), a, self.certainty(node.x) * self.certainty(x_prime))
+            node.expand(x_prime, self.vFunc(x_prime), a, node.c * self.certainty(x_prime))
 
         for i in range(len(node.sons)):
-            self.limited_expansion(node.sons[i], depth - 1)  # , A) # expandFunc, vFunc)
+            self.limited_expansion(node.sons[i], depth - 1)
 
-    def planner_action(self, depth=2):
+    def planner_action(self, depth=2, verbose = False):
         #if np.random.random() < 0.05:
         #    return np.random.choice(self.action_size)
         origin_code = self.encoder(torch.from_numpy(self.s_0).type(torch.FloatTensor))
         origin_value = self.vFunc(origin_code)
-        root = Node(origin_code, origin_value, to_categorical(0, self.action_size))
+        root = Node(origin_code, origin_value, to_categorical(0, self.action_size), self.certainty(origin_code))
 
-        self.limited_expansion(root, depth)  # , self.A)#, self.expFunc, self.vFunc)
+        self.limited_expansion(root, depth)
 
         plan, sum_value = self.findPlan(root)
+
+        if verbose:
+            root.print_parentetic()
+            print("plan: {}, sum_value: {}".format(plan[1:], sum_value))
 
         return np.where(plan[1] == 1)[0][0]
 
@@ -125,7 +138,7 @@ class Plan_RL_agent:
         #s_1, r, done, _ = self.env.step(actions[self.action])       #
         s, r, done, _ = self.env.step(self.action)
 
-
+        #TODO: sistemare questa parte
         '''
         enc_s1 = self.encoder(torch.from_numpy(np.asarray(s_1)).type(torch.FloatTensor))
         enc_s0 = self.encoder(torch.from_numpy(np.asarray(self.s_0)).type(torch.FloatTensor).to('cuda'))
@@ -157,7 +170,7 @@ class Plan_RL_agent:
               self.action = self.planner_action(depth=horizon)
             else:
                 # ADAPTIVE HORIZON
-                if len(self.mean_training_rewards) < 1:
+                if len(self.mean_training_rewards) < 1: #<---------le threshold sono per il maze
                     self.action = self.env.action_space.sample()
                 else:
                     if self.mean_training_rewards[-1] < -5:
@@ -190,9 +203,9 @@ class Plan_RL_agent:
 
 
     # Implement DQN training algorithm
-    def train(self, gamma=0.99, max_episodes=400,
+    def train(self, gamma=0.99, max_episodes=4,
               network_update_frequency=4,
-              network_sync_frequency=8):
+              network_sync_frequency=200):
         self.gamma = gamma
 
         # for MAZE, show different codes before training
@@ -252,18 +265,7 @@ class Plan_RL_agent:
                     print(
                         "\rEpisode {:d} Mean Rewards {:.2f}  Episode reward = {:.2f}   {} different codes \t\t".format(
                             ep, mean_rewards, self.rewards, self.different_codes), end="")
-                    #self.f.write(str(mean_rewards) + "\n")
-                    #print("losses ", self.transition_losses[-self.window:])
-                    # plot
-                    '''
-                    showDistancesFromGoal(self.encoder, 5, 5, [4,4])
-                    plt.plot(self.transition_losses)
-                    plt.title('Reaching goal [4,4]') # .format(self.env.goal[0],self.env.goal[1]))
-                    plt.ylabel('Loss maze')
-                    plt.xlabel('Episods')
-                    plt.show('lossMaze.png') #.format(self.env.goal[0],self.env.goal[1]))
-                    plt.clf()
-                    '''
+
                     if ep >= max_episodes:
                         training = False
                         print('\nEpisode limit reached.')
@@ -272,19 +274,11 @@ class Plan_RL_agent:
                         training = False
                         print('\nEnvironment solved in {} episodes!'.format(
                             ep))
-                        break
+                        #break
         # save models
         self.save_models()
         # plot
-        '''
-        showDistancesFromGoal(self.encoder, 5, 5, [4, 4])
-        plt.plot(self.transition_losses)
-        plt.title('Reaching goal [4,4]')  # .format(self.env.goal[0],self.env.goal[1]))
-        plt.ylabel('Reward')
-        plt.xlabel('Episods')
-        plt.savefig('rewardMaze.png')  # .format(self.env.goal[0],self.env.goal[1]))
-        plt.clf()
-        '''
+        self.plot_training_rewards()
 
     def save_models(self):
         torch.save(self.encoder, self.path_to_the_models + "encoder")
@@ -301,6 +295,15 @@ class Plan_RL_agent:
         self.trans_delta.eval()
         self.network = torch.load(self.path_to_the_models+"Q_net")
         self.network.eval()
+
+    def plot_training_rewards(self):
+        plt.plot(self.mean_training_rewards)
+        plt.title('Mean training rewards')
+        plt.ylabel('Reward')
+        plt.xlabel('Episods')
+        plt.show()
+        plt.savefig(self.path_to_the_models+'mean_training_rewards.png')
+        plt.clf()
 
     def calculate_loss(self, batch):
 
@@ -397,8 +400,13 @@ class Plan_RL_agent:
         next_states_2 = torch.FloatTensor(next_states_2).to(device)
 
         L = self.transition.two_step_loss(states, a_t, next_states, a_t_2, next_states_2)
+
+        #se mettiamo pure la triplet loss
+        #L + self.transition.triplet_loss_encoder(states, next_states, next_states_2, MARGIN)
+
         L.backward()
         #self.transition_losses.append(L)
+
         self.transition.optimizer.step()
         return
 

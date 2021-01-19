@@ -11,3 +11,4 @@ MODELS_DIR = "models/acrobot/"
 
 Q_HIDDEN_NODES = 32
 BATCH_SIZE = 64
+MARGIN = 1 / CODE_SIZE
