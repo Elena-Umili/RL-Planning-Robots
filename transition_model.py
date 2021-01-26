@@ -21,7 +21,7 @@ class TransitionDelta(nn.Module):
         self.layer1 = nn.Linear(input_size, input_size * 2).to(device)
         self.layer2 = nn.Linear(input_size * 2, code_size).to(device)
 
-    def forward(self, x, action):
+    def forward(self, x, action, discrete_codes = True):
         cat = torch.cat((x, action), -1)
         delta_x = torch.sigmoid(self.layer1(cat))
         delta_x = torch.tanh(self.layer2(delta_x))
@@ -29,9 +29,11 @@ class TransitionDelta(nn.Module):
         zeros = torch.zeros(self.code_size).to(device).to(device)
 
         t_pred = x + delta_x
-        if DISCRETE_CODES:
+
+        if discrete_codes:
           t_pred = t_pred.where(t_pred < 0.5, ones)
           t_pred = t_pred.where(t_pred >= 0.5, zeros)
+
         return delta_x, t_pred
 
 
@@ -46,13 +48,13 @@ class Transition(nn.Module):
 
     def forward_one_step(self, s, action):
         x = self.encoder(s, DISCRETE_CODES)
-        _, x_prime_hat = self.transition_delta(x, action)
+        _, x_prime_hat = self.transition_delta(x, action, False)
 
         return x_prime_hat
 
     def forward_two_step(self, s, a, a_prime):
         x_prime_hat = self.forward_one_step(s, a)
-        _, x_prime_prime_hat = self.transition_delta(x_prime_hat, a_prime)
+        _, x_prime_prime_hat = self.transition_delta(x_prime_hat, a_prime, False)
         return x_prime_prime_hat
 
 

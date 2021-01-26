@@ -18,41 +18,47 @@ class Net(nn.Module):
         self.layers0 = nn.Linear(
             code_size,  #  <-------------------------comment for Q-learning
             #STATE_SIZE,
-            n_hidden_nodes,
+            64,
             bias=bias).to(device)
-        self.layers1 = nn.ReLU().to(device)
+        self.layers1 = nn.SELU().to(device)
 
         self.layers2 = nn.Linear(
-            n_hidden_nodes,
-            int(n_hidden_nodes), #<-----comment for maze
+            64,
+            int(32),
             bias=bias).to(device)
 
-        self.layers3 = nn.ReLU()
+        self.layers3 = nn.SELU()
 
         self.layers4 = nn.Linear(
-                    int(n_hidden_nodes),
-                    int(n_hidden_nodes),
+                    int(32),
+                    int(16),
                     bias=bias).to('cuda')
-        self.layers5 = nn.ReLU().to('cuda')
+        self.layers5 = nn.SELU().to('cuda')
 
         self.layers6 = nn.Linear(
-                    int(n_hidden_nodes),
+                    int(16),
+                    int(n_outputs),
+                    bias=bias).to('cuda')
+        '''
+        self.layers7 = nn.SELU()
+        self.layers8 = nn.Linear(
+                    int(code_size/2),
                     n_outputs,
                     bias=bias).to('cuda')
-        #self.layers7 = nn.ReLU()
-
+        '''
 
     def forward(self, data):
         out = self.encoder(data.to(device))  # <-------------------------comment for Q-learning
 
         out = self.layers0(out.to(device))
         out = self.layers1(out).to(device)
-        out = F.tanh(self.layers2(out).to(device))
+        out = self.layers2(out).to(device)
         out = self.layers3(out).to(device)
         out = self.layers4(out).to('cuda')
         out = self.layers5(out).to('cuda')
         out = self.layers6(out).to('cuda')
-        #out = self.layers7(out)
+        #out = self.layers7(out).to('cuda')
+        #out = self.layers8(out).to('cuda')
         return out
 
     def enc_forw(self, enc_data):
@@ -63,7 +69,8 @@ class Net(nn.Module):
         out = self.layers4(out).to('cuda')
         out = self.layers5(out).to('cuda')
         out = self.layers6(out).to('cuda')
-        #out = self.layers7(out)
+        #out = self.layers7(out).to('cuda')
+        #out = self.layers8(out).to('cuda')
         return out
 
 
@@ -87,11 +94,12 @@ class QNetwork(nn.Module):
                                           lr=learning_rate)
 
     def get_action(self, state):
-
+        '''
         if np.random.random() < self.epsilon:
             action = np.random.choice(self.actions)
         else:
-            action = self.greedy_action(state)
+        '''
+        action = self.greedy_action(state)
         return action
 
     def greedy_action(self, state):

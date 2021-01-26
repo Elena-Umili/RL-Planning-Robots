@@ -29,9 +29,9 @@ if __name__ == '__main__':
     print_hi('PyCharm')
 
 
-    er_buf = experienceReplayBuffer(burn_in=1000)
+    er_buf = experienceReplayBuffer()
 
-    random.seed(8)
+    #random.seed(8)
     env = gym.make("Acrobot-v1")
     ddqn = Plan_RL_agent(env=env, buffer=er_buf, batch_size=64)
     ddqn.train()

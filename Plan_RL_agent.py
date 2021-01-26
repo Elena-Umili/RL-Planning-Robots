@@ -9,7 +9,7 @@ from QNetwork import QNetwork
 from Autoencoder import Encoder, Decoder
 # from testExplainability import verifyCodes, showDistancesFromGoal
 from Node import Node
-from system_conf import ACTION_SIZE, CODE_SIZE, Q_HIDDEN_NODES, BATCH_SIZE, REW_THRE, WINDOW, MODELS_DIR, MARGIN
+from system_conf import ACTION_SIZE, CODE_SIZE, Q_HIDDEN_NODES, BATCH_SIZE, REW_THRE, WINDOW, MODELS_DIR, MARGIN, PREDICT_CERTAINTY
 from transition_model import Transition, TransitionDelta
 import matplotlib.pyplot as plt
 import random
@@ -26,7 +26,7 @@ def to_categorical(y, num_classes):
 
 class Plan_RL_agent:
 
-    def __init__(self, env, buffer, load_models = False, epsilon=0.5, Q_hidden_nodes = Q_HIDDEN_NODES, batch_size= BATCH_SIZE, rew_thre = REW_THRE, window = WINDOW, path_to_the_models = MODELS_DIR):
+    def __init__(self, env, buffer, load_models = False, epsilon=0.05, Q_hidden_nodes = Q_HIDDEN_NODES, batch_size= BATCH_SIZE, rew_thre = REW_THRE, window = WINDOW, path_to_the_models = MODELS_DIR):
 
         self.path_to_the_models = path_to_the_models
         self.env = env
@@ -67,9 +67,12 @@ class Plan_RL_agent:
         return torch.max(v0).to('cpu').detach().numpy()
 
     def certainty(self, x):
-        x_p = self.encoder(self.decoder(x))
-        distance = torch.nn.L1Loss()
-        c = 1 - distance(x, x_p).item()
+        if PREDICT_CERTAINTY:
+            x_p = self.encoder(self.decoder(x))
+            distance = torch.nn.L1Loss()
+            c = 1 - distance(x, x_p).item()
+        else:
+            return 1
         return c
 
 
@@ -109,7 +112,7 @@ class Plan_RL_agent:
         for i in range(len(node.sons)):
             self.limited_expansion(node.sons[i], depth - 1)
 
-    def planner_action(self, depth=2, verbose = False):
+    def planner_action(self, depth=2, verbose = True):
         #if np.random.random() < 0.05:
         #    return np.random.choice(self.action_size)
         origin_code = self.encoder(torch.from_numpy(self.s_0).type(torch.FloatTensor))
@@ -132,68 +135,68 @@ class Plan_RL_agent:
                 return True
         return False
 
-    def take_step(self, mode='train', horizon = 0):
+    def take_step(self, mode='train', horizon = 1):
 
         #actions = ['N', 'E', 'S', 'W']                              # <-----decomment for maze
         #s_1, r, done, _ = self.env.step(actions[self.action])       #
+        #print(self.action)
         s, r, done, _ = self.env.step(self.action)
-
-        #TODO: sistemare questa parte
-        '''
-        enc_s1 = self.encoder(torch.from_numpy(np.asarray(s_1)).type(torch.FloatTensor))
-        enc_s0 = self.encoder(torch.from_numpy(np.asarray(self.s_0)).type(torch.FloatTensor).to('cuda'))
-        # print("Reward = ", r)
-        if(self.is_diff(enc_s0,enc_s1)):
-        # print("step passati = ", self.step_count - self.timestamp)
-        # self.timestamp = self.step_count
-        '''
-        #self.buffer.append(self.s_0, self.action, r, done, s_1)
-
-        if self.a_1 != -1:
-            #                  (  s_0     , a_1   ,   r_1    ,    d_1    ,    s_1    ,    a_2  ,r_2, d_2,s_2)
-            self.buffer.append(self.s_0, self.a_1, self.r_1, self.done_1, self.s_1, self.action, r, done, s )
-            self.s_0 = self.s_1.copy()
-        self.a_1 = self.action
-        self.r_1 = r
-        self.done_1 = done
-        self.s_1 = s
-
-
-        # self.cum_rew = 0
-
-        if mode == 'explore':
-            self.action = self.env.action_space.sample()
-        else:
-            #self.action = self.network.get_action(self.s_0)
-
-            if horizon != 0:
-              self.action = self.planner_action(depth=horizon)
+        self.rewards += r
+        self.step_count += 1
+        #TODO: persistent action
+        c1 = self.encoder(torch.from_numpy(np.asarray(s)).type(torch.FloatTensor))
+        if self.is_diff(self.current_code, c1) or done or self.persistency >= 10:
+            self.persistency = 0
+            self.current_code = c1
+            #r += self.cum_rew
+            if self.a_1 != -1:
+                #                  (  s_0     , a_1   ,   r_1    ,    d_1    ,    s_1    ,    a_2  ,r_2, d_2,s_2)
+                self.buffer.append(self.s_0, self.a_1, self.r_1, self.done_1, self.s_1, self.action, r, done, s )
+                #if not self.populate:
+                #    print("\n###### BUFF\n({}, {}, {}, {}, {}, {}, {}, {}, {}))".format(self.s_0, self.a_1, self.r_1, self.done_1, self.s_1, self.action, r, done, s))
+                self.s_0 = self.s_1.copy()
+            self.a_1 = self.action
+            self.r_1 = r
+            self.done_1 = done
+            self.s_1 = s
+            self.cum_rew = 0
+            ########################## ACTION choice
+            if mode == 'explore':
+                self.action = self.env.action_space.sample()
             else:
-                # ADAPTIVE HORIZON
-                if len(self.mean_training_rewards) < 1: #<---------le threshold sono per il maze
-                    self.action = self.env.action_space.sample()
+                self.action = self.network.get_action(self.s_0) # <-------------------------DEcomment for Q-learning
+                '''
+                if horizon != 0:
+                  self.action = self.planner_action(depth=horizon)
                 else:
-                    if self.mean_training_rewards[-1] < -5:
+                    # ADAPTIVE HORIZON
+                    if len(self.mean_training_rewards) < 1: #<---------le threshold sono per il maze
                         self.action = self.env.action_space.sample()
                     else:
-                        if self.mean_training_rewards[-1] < -3:
-                            self.action = self.network.get_action(self.s_0)
+                        if self.mean_training_rewards[-1] < -5:
+                            self.action = self.env.action_space.sample()
                         else:
-                            if self.mean_training_rewards[-1] < -2:
-                                self.action = self.planner_action(depth= 1) #comment for Q-learning
+                            if self.mean_training_rewards[-1] < -3:
+                                self.action = self.network.get_action(self.s_0)
                             else:
-                                if self.mean_training_rewards[-1] < -1:
-                                    self.action = self.planner_action(depth= 2)
+                                if self.mean_training_rewards[-1] < -2:
+                                    self.action = self.planner_action(depth= 1) #comment for Q-learning
                                 else:
-                                    self.planner_action(depth= 3)
+                                    if self.mean_training_rewards[-1] < -1:
+                                        self.action = self.planner_action(depth= 2)
+                                    else:
+                                        self.planner_action(depth= 3)
+                '''
+        else:
+            self.cum_rew += r
+            self.persistency += 1
 
-        self.rewards += r
-
-
-        self.step_count += 1
         if done:
             self.s_0 = self.env.reset()
+            self.current_code = self.encoder(torch.from_numpy(self.s_0.copy()).type(torch.FloatTensor))
+            self.persistency = 0
             self.a_1 = -1
+            self.cum_rew = 0
         return done
 
     def monitor_replanning(self, horizon):
@@ -203,7 +206,7 @@ class Plan_RL_agent:
 
 
     # Implement DQN training algorithm
-    def train(self, gamma=0.99, max_episodes=4,
+    def train(self, gamma=0.99, max_episodes=400,
               network_update_frequency=4,
               network_sync_frequency=200):
         self.gamma = gamma
@@ -214,15 +217,23 @@ class Plan_RL_agent:
 
         self.s_0 = self.env.reset()
         self.a_1 = -1
+        self.current_code = self.encoder(torch.from_numpy(self.s_0.copy()).type(torch.FloatTensor))
+        self.persistency = 0
+
+        self.cum_rew = 0
         # Populate replay buffer
+        self.populate = True
         while self.buffer.burn_in_capacity() < 1:
             self.take_step(mode='explore')
             #print("explore")
         ep = 0
         training = True
+        self.populate = False
         while training:
             self.s_0 = self.env.reset()
             self.a_1 = -1
+            self.current_code = self.encoder(torch.from_numpy(self.s_0.copy()).type(torch.FloatTensor))
+            self.persistency = 0
             self.rewards = 0
             done = False
             while done == False:
@@ -253,8 +264,8 @@ class Plan_RL_agent:
 
                 if done:
                     ep += 1
-                    if self.epsilon >= 0.10:
-                        self.epsilon -= 0.05
+                    if self.epsilon >= 0.05:
+                        self.epsilon = self.epsilon * 1
                     self.episode = ep
                     self.training_rewards.append(self.rewards)
                     self.training_loss.append(np.mean(self.update_loss))
@@ -419,7 +430,8 @@ class Plan_RL_agent:
 
         self.transition.optimizer.zero_grad()
         batch2 = self.buffer.sample_batch(batch_size=self.batch_size)
-        self.pred_update_two_steps(batch2)
+        #self.pred_update_two_steps(batch2)
+        self.pred_update(batch2)
 
         if self.network.device == 'cuda':
             self.update_loss.append(loss.detach().cpu().numpy())
