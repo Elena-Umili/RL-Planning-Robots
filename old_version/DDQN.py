@@ -37,6 +37,12 @@ class plan_node():
 class Plan_RL_agent:
     def __init__(self, env, buffer, load_models = False, epsilon=0.5, Q_hidden_nodes = Q_HIDDEN_NODES, batch_size= BATCH_SIZE, rew_thre = REW_THRE, window = WINDOW, path_to_the_models = MODELS_DIR):
 
+        print("MARGIN: ", MARGIN)
+        print(("1/MARGIN: ", 1/MARGIN))
+        self.lq = 0
+        self.lts = 0
+        self.ltx = 0
+        self.ld = 0
         self.path_to_the_models = path_to_the_models
         self.env = env
 
@@ -270,8 +276,8 @@ class Plan_RL_agent:
                 self.action = self.env.action_space.sample()
 
             else:
-                self.action = self.network.get_action(self.s_0)
-                #self.action = self.planner_action()
+                #self.action = self.network.get_action(self.s_0)
+                self.action = self.planner_action()
 
             self.s_0 = s_1.copy()
 
@@ -320,8 +326,8 @@ class Plan_RL_agent:
                     mean_rewards = np.mean(
                         self.training_rewards[-self.window:])
                     self.mean_training_rewards.append(mean_rewards)
-                    print("\rEpisode {:d} Mean Rewards {:.2f}  Episode reward = {:.2f}\t\t".format(
-                        ep, mean_rewards, self.rewards), end="")
+                    print("\rEpisode {:d} Mean Rewards {:.2f}  Episode reward = {:.2f}  lq = {:.3f}  lts ={:3f}  ltx ={:3f}  ld ={:3f}\t\t".format(
+                        ep, mean_rewards, self.rewards, self.lq, self.lts, self.ltx, self.ld ), end="")
                     #self.f.write(str(mean_rewards)+ "\n")
 
 
@@ -362,13 +368,13 @@ class Plan_RL_agent:
         qvals_next[dones_t] = 0  # Zero-out terminal states
         expected_qvals = self.gamma * qvals_next + rewards_t
 
-        loss = (nn.MSELoss()(qvals, expected_qvals))
+        self.lq = (nn.MSELoss()(qvals, expected_qvals))
 
         #print("loss = ", loss)
         #loss.backward()
         #self.network.optimizer.step()
 
-        return loss
+        return self.lq
 
     def pred_update(self, batch):
         loss_function = nn.MSELoss()
@@ -391,8 +397,9 @@ class Plan_RL_agent:
             next_states = np.array([np.ravel(s) for s in next_states])
         next_states = torch.FloatTensor(next_states).to('cuda')
 
-        L = self.transition.one_step_loss(states, a_t, next_states)
-
+        self.ltx, self.lts = self.transition.one_step_loss(states, a_t, next_states)
+        self.ld = self.transition.distant_codes_loss(states, next_states)
+        L = self.lts + self.ltx + self.ld
         #L.backward()
         #print("pred_loss = ", L)
         #self.transition.optimizer.step()

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from system_conf import CODE_SIZE, ACTION_SIZE, DISCRETE_CODES
+from system_conf import DISCRETE_CODES, MARGIN
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -55,6 +55,7 @@ class Transition(nn.Module):
 
     def one_step_loss(self, s, a, s_prime):
        lmse = nn.MSELoss()
+       L1 = nn.L1Loss()
        x_prime = self.encoder(s_prime, DISCRETE_CODES)
        x_prime_hat = self.forward_one_step(s,a)
 
@@ -63,7 +64,7 @@ class Transition(nn.Module):
        s_prime_hat = self.decoder(x_prime_hat)
        error_s = lmse(s_prime, s_prime_hat)
 
-       return  error_x + error_s
+       return  error_x, error_s
 
     def two_step_loss(self, s, a, s_prime, a_prime, s_prime_prime):
        lmse = nn.MSELoss()
@@ -79,6 +80,11 @@ class Transition(nn.Module):
        error_s = lmse(s_prime_prime, s_prime_prime_hat)
 
        return one_step_loss + error_x + error_s
+
+    def distant_codes_loss(self, s, s_prime, margin = MARGIN):
+        distF = torch.nn.L1Loss()
+        dist = distF(self.encoder(s), self.encoder(s_prime))
+        return (1/margin) * torch.nn.functional.relu(- dist + margin)
 
     ############## TRIPLET LOSS per imparare uno spazio metrico
     # farla con solo l'encoder??
