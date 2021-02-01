@@ -35,7 +35,7 @@ class plan_node():
 
 
 class Plan_RL_agent:
-    def __init__(self, env, buffer, load_models = False, epsilon=0.5, Q_hidden_nodes = Q_HIDDEN_NODES, batch_size= BATCH_SIZE, rew_thre = REW_THRE, window = WINDOW, path_to_the_models = MODELS_DIR):
+    def __init__(self, env, buffer, load_models = False, epsilon=0.05, Q_hidden_nodes = Q_HIDDEN_NODES, batch_size= BATCH_SIZE, rew_thre = REW_THRE, window = WINDOW, path_to_the_models = MODELS_DIR):
 
         print("MARGIN: ", MARGIN)
         print(("1/MARGIN: ", 1/MARGIN))
@@ -56,8 +56,9 @@ class Plan_RL_agent:
             self.encoder = Encoder(self.code_size)
             self.decoder = Decoder(self.code_size)
             self.trans_delta = TransitionDelta(self.code_size, self.action_size)
-            self.transition = Transition(self.encoder, self.decoder, self.trans_delta)
             self.network = QNetwork(env=env, n_hidden_nodes=Q_hidden_nodes, encoder=self.encoder)
+
+        self.transition = Transition(self.encoder, self.decoder, self.trans_delta)
         params = [self.encoder.parameters(),self.decoder.parameters(), self.trans_delta.parameters(), self.network.symbolic_net.parameters()]
         params = itertools.chain(*params)
         self.optimizer = torch.optim.Adam(params,
@@ -170,25 +171,29 @@ class Plan_RL_agent:
         for i in range(len(node.sons)):
             self.limited_expansion(node.sons[i], depth - 1)
 
-    def planner_action_new(self, depth=1, verbose = False):
+    def planner_action(self, depth=1, verbose = False):
         if np.random.random() < 0.05:
             return np.random.choice(self.action_size)
 
         origin_code = self.encoder(torch.from_numpy(self.s_0).type(torch.FloatTensor))
+        #print("Origin code: ", origin_code)
         origin_value = self.vFunc(origin_code)
         root = Node(origin_code, origin_value, to_categorical(0, self.action_size), self.certainty(origin_code))
 
         self.limited_expansion(root, depth)
 
+        if verbose:
+            root.print_parentetic()
+
         plan, sum_value = self.findPlan(root)
 
         if verbose:
-            root.print_parentetic()
+            #root.print_parentetic()
             print("plan: {}, sum_value: {}".format(plan[1:], sum_value))
 
         return np.where(plan[1] == 1)[0][0]
 
-    def planner_action(self, depth=1):
+    def planner_action_old(self, depth=1):
         #if np.random.random() < 0.05:
         #    return np.random.choice(self.action_size)
 
@@ -243,12 +248,18 @@ class Plan_RL_agent:
         '''
 
         l_max = [max0, max1, max2]
+
+        #smax = max(l_max)
+        #indices_max = [i for i, j in enumerate(l_max) if j == smax]
+        #k = random.choice(indices_max)
+
         #l_amax = [arg_max0, arg_max1, arg_max2]
         l_amax = [0, 1, 2]
 
         #if(action != l_amax[np.argmax(l_max)]):
             #print("DIVERSO!")
 
+        #return k
         return l_amax[np.argmax(l_max)]
 
     def is_diff(self, s1, s0):
@@ -278,7 +289,13 @@ class Plan_RL_agent:
             else:
                 #self.action = self.network.get_action(self.s_0)
                 self.action = self.planner_action()
-
+                # ADAPTIVE HORIZON
+                '''
+                if len(self.mean_training_rewards) < 1 or self.mean_training_rewards[-1] < -400:  # <---------le threshold sono per il maze
+                    self.action = self.network.get_action(self.s_0)
+                else:
+                    self.action = self.planner_action(depth=1)  # comment for Q-learning
+                '''
             self.s_0 = s_1.copy()
 
         self.rewards += r
@@ -289,7 +306,7 @@ class Plan_RL_agent:
         return done
 
     # Implement DQN training algorithm
-    def train(self, gamma=0.99, max_episodes=300,
+    def train(self, gamma=0.99, max_episodes=500,
               network_update_frequency=4,
               network_sync_frequency=200):
         self.gamma = gamma
@@ -304,10 +321,17 @@ class Plan_RL_agent:
             self.rewards = 0
             done = False
             while done == False:
-                if((ep % 50) == 0 ):
+                if((ep % 20) == 0 ):
                     self.env.render()
 
-                done = self.take_step(mode='train')
+                p = np.random.random()
+                if p < self.epsilon:
+                    done = self.take_step(mode='explore')
+                    # print("explore")
+                else:
+                    done = self.take_step(mode='train', horizon=2)
+                    # print("train")
+                #done = self.take_step(mode='train')
                 # Update network
                 if self.step_count % network_update_frequency == 0:
                     self.update()
@@ -319,6 +343,8 @@ class Plan_RL_agent:
 
                 if done:
                     ep += 1
+                    if self.epsilon >= 0.05:
+                        self.epsilon = self.epsilon * 0.7
                     self. episode = ep
                     self.training_rewards.append(self.rewards)
                     self.training_loss.append(np.mean(self.update_loss))
@@ -326,8 +352,8 @@ class Plan_RL_agent:
                     mean_rewards = np.mean(
                         self.training_rewards[-self.window:])
                     self.mean_training_rewards.append(mean_rewards)
-                    print("\rEpisode {:d} Mean Rewards {:.2f}  Episode reward = {:.2f}  lq = {:.3f}  lts ={:3f}  ltx ={:3f}  ld ={:3f}\t\t".format(
-                        ep, mean_rewards, self.rewards, self.lq, self.lts, self.ltx, self.ld ), end="")
+                    print("\rEpisode {:d} Mean Rewards {:.2f}  Episode reward = {:.2f}  lq = {:.3f}  lts ={:3f}  ltx ={:3f}  ld ={:3f}  l_spars={:3f}\t\t".format(
+                        ep, mean_rewards, self.rewards, self.lq, self.lts, self.ltx, self.ld, self.l_spars ), end="")
                     #self.f.write(str(mean_rewards)+ "\n")
 
 
@@ -398,8 +424,12 @@ class Plan_RL_agent:
         next_states = torch.FloatTensor(next_states).to('cuda')
 
         self.ltx, self.lts = self.transition.one_step_loss(states, a_t, next_states)
+        # per renderla comparabile alla lq
+        #self.ltx *= 50
         self.ld = self.transition.distant_codes_loss(states, next_states)
-        L = self.lts + self.ltx + self.ld
+        self.l_spars = self.transition.smooth_discrete_loss(states)
+        #self.l_spars += self.transition.sparsity_loss(next_states)
+        L = self.lts + self.ltx + self.ld + self.l_spars
         #L.backward()
         #print("pred_loss = ", L)
         #self.transition.optimizer.step()
