@@ -8,7 +8,7 @@ with warnings.catch_warnings():
 
 class experienceReplayBuffer:
 
-    def __init__(self, memory_size=50000, burn_in=10000):
+    def __init__(self, memory_size=50000, burn_in=1000):
         self.memory_size = memory_size
         self.burn_in = burn_in
         self.Buffer = namedtuple('Buffer',

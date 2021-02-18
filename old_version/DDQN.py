@@ -12,7 +12,7 @@ from Node import Node
 import random
 import itertools
 
-from system_conf import STATE_SIZE, ACTION_SIZE, CODE_SIZE, Q_HIDDEN_NODES, BATCH_SIZE, REW_THRE, WINDOW, MODELS_DIR, MARGIN, PREDICT_CERTAINTY
+from system_conf import STATE_SIZE, ACTION_SIZE, CODE_SIZE, Q_HIDDEN_NODES, BATCH_SIZE, REW_THRE, MINIMUM_REWARD, WINDOW, MODELS_DIR, MARGIN, PREDICT_CERTAINTY, DISCRETE_CODES
 import matplotlib.pyplot as plt
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -35,14 +35,16 @@ class plan_node():
 
 
 class Plan_RL_agent:
-    def __init__(self, env, buffer, load_models = False, epsilon=0.05, Q_hidden_nodes = Q_HIDDEN_NODES, batch_size= BATCH_SIZE, rew_thre = REW_THRE, window = WINDOW, path_to_the_models = MODELS_DIR):
+    def __init__(self, env, buffer, load_models = False, epsilon=0.05, Q_hidden_nodes = Q_HIDDEN_NODES, batch_size= BATCH_SIZE, rew_thre = REW_THRE, min_rew = MINIMUM_REWARD, window = WINDOW, path_to_the_models = MODELS_DIR):
 
         print("MARGIN: ", MARGIN)
         print(("1/MARGIN: ", 1/MARGIN))
+        self.margin_discrete = 0
         self.lq = 0
         self.lts = 0
         self.ltx = 0
         self.ld = 0
+        self.l_spars = 0
         self.path_to_the_models = path_to_the_models
         self.env = env
 
@@ -70,6 +72,9 @@ class Plan_RL_agent:
         self.batch_size = batch_size
         self.window = window
         self.reward_threshold = rew_thre
+        self.min_reward = min_rew
+        self.maximum_horizon = 1
+        self.horizon = 1
         self.initialize()
         self.action = 0
         self.temp_s1 = 0
@@ -81,15 +86,19 @@ class Plan_RL_agent:
         self.A = [to_categorical(i, self.action_size) for i in range(self.action_size)]
 
 
-    def monitor_replanning(self, horizon, show = True):
+    def monitor_replanning(self, horizon, show = True, plot = True):
         done = False
         self.rewards = 0
+        if plot:
+            self.plans = []
         while not done:
             if show:
                 self.env.render()
-            done = self.take_step(horizon = horizon)
+            done = self.take_step(horizon = horizon, plot = plot)
         if show:
             print("Episode reward: ", self.rewards)
+        if plot:
+            self.plot_plans()
         return self.rewards
 
     def save_models(self):
@@ -117,9 +126,38 @@ class Plan_RL_agent:
         plt.savefig(self.path_to_the_models+'mean_training_rewards.png')
         plt.clf()
 
+    def plot_plans(self):
+        fig = plt.gcf()
+        fig.set_size_inches(28, 4)
+        d = len(self.plans[0])
+        executed_actions = [p[0] for p in self.plans]
+
+        for i in range(len(self.plans)):
+            plt.plot(range(i,i+d), self.plans[i], color='blue')
+        plt.plot( executed_actions, c='red')
+
+        plt.title('Monitor replanning plans')
+        plt.ylabel('Actions')
+        plt.xlabel('Steps')
+        #plt.show()
+        fig.savefig(self.path_to_the_models+'monitor_replanning_{}.png'.format(d))
+        plt.clf()
+
     def expandFunc(self, x, a):
-        _, x_prime = self.trans_delta(x, torch.from_numpy(a).type(torch.FloatTensor).to(device))
-        return x_prime
+        _, x_prime, x_prime_d = self.trans_delta(x, torch.from_numpy(a).type(torch.FloatTensor).to(device), True)
+        lmse = nn.MSELoss()
+        #print(x_prime)
+        #print(x_prime_d)
+        self.disc_error = lmse(x_prime, x_prime_d).item()
+
+        if PREDICT_CERTAINTY:
+            c = 1 - self.disc_error
+        #print(l)
+        #print(c)
+        else:
+            c = 1
+
+        return x_prime, x_prime_d, c
 
     def vFunc(self, x):
         v0 = self.network.get_enc_value(x)
@@ -131,7 +169,7 @@ class Plan_RL_agent:
             distance = torch.nn.L1Loss()
             c = 1 - distance(x, x_p).item()
         else:
-            return 1
+            c = 1
         return c
 
 
@@ -164,18 +202,22 @@ class Plan_RL_agent:
             return
 
         for a in self.A:
-            x_prime = self.expandFunc(node.x, a)
-
-            node.expand(x_prime, self.vFunc(x_prime), a, node.c * self.certainty(x_prime))
+            x_prime, x_prime_d, c = self.expandFunc(node.x, a)
+            if self.margin_discrete >= 0.499999:
+                node.expand(x_prime_d, self.vFunc(x_prime_d), a, node.c * c)
+            else:
+                node.expand(x_prime_d, self.vFunc(x_prime + (x_prime_d - x_prime)*(2* self.margin_discrete)), a, node.c * c)
+            #node.expand(x_prime_d, self.vFunc(x_prime + (x_prime_d - x_prime)*(1.5*self.margin_discrete)), a, node.c * c)
+            #node.expand(x_prime_d, self.vFunc(x_prime_d), a, node.c * c)
 
         for i in range(len(node.sons)):
             self.limited_expansion(node.sons[i], depth - 1)
 
-    def planner_action(self, depth=1, verbose = False):
+    def planner_action(self, depth=1, verbose = False, plot = False):
         if np.random.random() < 0.05:
             return np.random.choice(self.action_size)
 
-        origin_code = self.encoder(torch.from_numpy(self.s_0).type(torch.FloatTensor))
+        origin_code = self.encoder(torch.from_numpy(self.s_0).type(torch.FloatTensor), True)
         #print("Origin code: ", origin_code)
         origin_value = self.vFunc(origin_code)
         root = Node(origin_code, origin_value, to_categorical(0, self.action_size), self.certainty(origin_code))
@@ -190,6 +232,11 @@ class Plan_RL_agent:
         if verbose:
             #root.print_parentetic()
             print("plan: {}, sum_value: {}".format(plan[1:], sum_value))
+
+        if plot:
+            plan_read = [ np.where(plan[i] == 1)[0][0] for i in range(1, len(plan)) ]
+            #print("plan_read : ", plan_read)
+            self.plans.append(plan_read)
 
         return np.where(plan[1] == 1)[0][0]
 
@@ -268,7 +315,7 @@ class Plan_RL_agent:
                 return True
         return False
 
-    def take_step(self, mode='train', horizon=1):
+    def take_step(self, mode='train', horizon=0, plot= False):
 
         s_1, r, done, _ = self.env.step(self.action)
         #print(self.env.action_space)
@@ -288,14 +335,22 @@ class Plan_RL_agent:
 
             else:
                 #self.action = self.network.get_action(self.s_0)
-                self.action = self.planner_action()
-                # ADAPTIVE HORIZON
-                '''
-                if len(self.mean_training_rewards) < 1 or self.mean_training_rewards[-1] < -400:  # <---------le threshold sono per il maze
-                    self.action = self.network.get_action(self.s_0)
+                #self.action = self.planner_action()
+                if horizon == 0:
+                    # ADAPTIVE HORIZON
+                    if len(self.mean_training_rewards) == 0:
+                        self.horizon = 1
+                    else:
+                        step = (self.reward_threshold - self.min_reward) / self.maximum_horizon
+                        for i in range(self.maximum_horizon):
+                            if self.mean_training_rewards[-1] < self.min_reward + (i+1)*step :
+                                self.horizon = i+1
+                                break
                 else:
-                    self.action = self.planner_action(depth=1)  # comment for Q-learning
-                '''
+                    self.horizon = horizon
+                #print(horizon)
+                self.action = self.planner_action(depth=self.horizon, plot = plot)
+
             self.s_0 = s_1.copy()
 
         self.rewards += r
@@ -306,7 +361,7 @@ class Plan_RL_agent:
         return done
 
     # Implement DQN training algorithm
-    def train(self, gamma=0.99, max_episodes=500,
+    def train(self, gamma=0.99, max_episodes=1000,
               network_update_frequency=4,
               network_sync_frequency=200):
         self.gamma = gamma
@@ -329,7 +384,7 @@ class Plan_RL_agent:
                     done = self.take_step(mode='explore')
                     # print("explore")
                 else:
-                    done = self.take_step(mode='train', horizon=2)
+                    done = self.take_step(mode='train')
                     # print("train")
                 #done = self.take_step(mode='train')
                 # Update network
@@ -343,6 +398,10 @@ class Plan_RL_agent:
 
                 if done:
                     ep += 1
+                    self.margin_discrete = min([0.5 - pow(0.5, 0.15*ep+1), 0.499999])
+                    if self.margin_discrete >= 0.499999:
+                        DISCRETE_CODES = True
+                    #self.margin_discrete = 0
                     if self.epsilon >= 0.05:
                         self.epsilon = self.epsilon * 0.7
                     self. episode = ep
@@ -352,8 +411,8 @@ class Plan_RL_agent:
                     mean_rewards = np.mean(
                         self.training_rewards[-self.window:])
                     self.mean_training_rewards.append(mean_rewards)
-                    print("\rEpisode {:d} Mean Rewards {:.2f}  Episode reward = {:.2f}  lq = {:.3f}  lts ={:3f}  ltx ={:3f}  ld ={:3f}  l_spars={:3f}\t\t".format(
-                        ep, mean_rewards, self.rewards, self.lq, self.lts, self.ltx, self.ld, self.l_spars ), end="")
+                    print("\rEpisode {:d} Mean Rewards {:.2f}  Episode reward = {:.2f}  lq = {:.3f}  horizon ={}  ltx ={:3f}  ld ={:3f}  l_spars={:3f}  margin={:3f}  disc_err={:3f}\t\t".format(
+                        ep, mean_rewards, self.rewards, self.lq, self.horizon, self.ltx, self.ld, self.l_spars, self.margin_discrete, self.disc_error), end="")
                     #self.f.write(str(mean_rewards)+ "\n")
 
 
@@ -427,8 +486,12 @@ class Plan_RL_agent:
         # per renderla comparabile alla lq
         #self.ltx *= 50
         self.ld = self.transition.distant_codes_loss(states, next_states)
-        self.l_spars = self.transition.smooth_discrete_loss(states)
-        #self.l_spars += self.transition.sparsity_loss(next_states)
+        self.l_spars = self.transition.distant_from_relu_loss(self.encoder(states), 0.5, self.margin_discrete)
+        self.l_spars += self.transition.distant_from_relu_loss(self.encoder(next_states), 0.5, self.margin_discrete)
+        deltas, _ = self.transition.forward_one_step(states, a_t)
+        self.l_spars += self.transition.distant_from_relu_loss(deltas, 0.5, self.margin_discrete)
+        self.l_spars += self.transition.distant_from_relu_loss(deltas,-0.5, self.margin_discrete)
+        #self.l_kl = self.transition.experiment_loss((states))
         L = self.lts + self.ltx + self.ld + self.l_spars
         #L.backward()
         #print("pred_loss = ", L)

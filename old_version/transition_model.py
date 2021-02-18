@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from system_conf import DISCRETE_CODES, MARGIN, STANDARD_DEVIATION, CODE_SIZE
+from system_conf import DISCRETE_CODES, MARGIN, STANDARD_DEVIATION, CODE_SIZE, DISCRETE_LOSS
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -16,20 +16,27 @@ class TransitionDelta(nn.Module):
         self.action_size = action_size
         input_size = code_size + action_size
 
-        self.layer1 = nn.Linear(input_size, input_size * 2).to(device)
-        self.layer2 = nn.Linear(input_size * 2, code_size).to(device)
+        self.layer1 = nn.Linear(input_size, input_size*2).to(device)
+        self.layer2 = nn.Linear(input_size*2, code_size).to(device)
+        #self.layer3 = nn.Linear(int(input_size*1.5), code_size).to(device)
 
-    def forward(self, z, action, discrete_codes = True):
+    def forward(self, z, action, discrete_codes = DISCRETE_CODES):
         cat = torch.cat((z, action), -1)
-        delta_z = torch.sigmoid(self.layer1(cat))
-        delta_z = torch.tanh(self.layer2(delta_z))
+        #delta_z = torch.sigmoid(self.layer1(cat))
+        delta_z =torch.sigmoid(self.layer1(cat))
+        #delta_z = self.layer2(delta_z)
+        #delta_z = torch.tanh(self.layer3(delta_z))
+        delta_z = self.layer2(delta_z)
+        delta_z = 1.5* torch.tanh(delta_z) + 0.5* torch.tanh(-3*delta_z)
         y = torch.ones(self.code_size).to(device).to('cuda')
         x = torch.zeros(self.code_size).to(device).to('cuda')
 
         t_pred = z + delta_z
+        #t_pred = delta_z
         if discrete_codes:
-            t_pred = t_pred.where(t_pred < 0.5, y)
-            t_pred = t_pred.where(t_pred >= 0.5, x)
+            t_pred_d = t_pred.where(t_pred < 0.5, y)
+            t_pred_d = t_pred_d.where(t_pred >= 0.5, x)
+            return delta_z, t_pred, t_pred_d
         return delta_z, t_pred
 
 
@@ -41,16 +48,18 @@ class Transition(nn.Module):
         self.decoder = decoder
         self.transition_delta = transition_delta
         self.optimizer = optim.Adam(self.parameters(), lr=0.0001)
+        #self.discrete_codes_distr =
+        #self.continue_codes_distr =
 
     def forward_one_step(self, s, action):
         x = self.encoder(s, DISCRETE_CODES)
-        _, x_prime_hat = self.transition_delta(x, action, False)
+        delta_x, x_prime_hat = self.transition_delta(x, action, DISCRETE_LOSS)
 
-        return x_prime_hat
+        return delta_x, x_prime_hat
 
     def forward_two_step(self, s, a, a_prime):
         x_prime_hat = self.forward_one_step(s, a)
-        _, x_prime_prime_hat = self.transition_delta(x_prime_hat, a_prime, False)
+        _, x_prime_prime_hat = self.transition_delta(x_prime_hat, a_prime, DISCRETE_LOSS)
         return x_prime_prime_hat
 
 
@@ -60,16 +69,20 @@ class Transition(nn.Module):
        lmse_sum = nn.MSELoss()
        L1 = nn.L1Loss()
        x_prime = self.encoder(s_prime, DISCRETE_CODES)
-       x_prime_hat = self.forward_one_step(s,a)
+       delta_x, x_prime_hat = self.forward_one_step(s,a)
 
-       #error_x = L1(x_prime, x_prime_hat)
-       error_x = lmse_sum(x_prime, x_prime_hat)
+       error_x = L1(x_prime, x_prime_hat)
+       #error_x = lmse_sum(x_prime, x_prime_hat)
 
        s_prime_hat = self.decoder(x_prime_hat)
        error_s = lmse_mean(s_prime, s_prime_hat)
-
-       #return  error_x, error_s
-       return  error_x, 0
+       '''
+       distF = torch.nn.L1Loss()
+       dist = distF(self.encoder(s), x_prime_hat)
+       margin = MARGIN
+       ld = (1 / margin) * torch.nn.functional.relu(- dist + margin)
+       '''
+       return  error_x, 0#, ld
 
     def two_step_loss(self, s, a, s_prime, a_prime, s_prime_prime):
        lmse = nn.MSELoss()
@@ -90,6 +103,32 @@ class Transition(nn.Module):
         distF = torch.nn.L1Loss()
         dist = distF(self.encoder(s), self.encoder(s_prime))
         return (1/margin) * torch.nn.functional.relu(- dist + margin)
+
+    def distant_codes_exponential_loss(self, s, s_prime):
+        distF = torch.nn.L1Loss()
+        dist = distF(self.encoder(s), self.encoder(s_prime))
+        C = 8
+        return torch.exp(-C* dist)
+
+    #def kl_divergence_loss(self, x):
+        #p = desired distribution
+        #q = distribution of codes
+        #torch.distributions.kl.kl_divergence(p, q)
+
+    def distant_from_relu_loss(self, x, const, margin):
+        if margin == 0:
+            return 0
+        distF = torch.nn.L1Loss()
+        size = list(x.size())[1]
+        const_tens = torch.FloatTensor([const for _ in range(size)]).unsqueeze(0).to('cuda')
+        #code = self.encoder(s, False)
+        #print("code: ", code)
+
+        dist = distF(x, const_tens)
+        #print("dist :", dist)
+
+        return (1/margin) * torch.nn.functional.relu(- dist + margin)
+
 
     def smooth_discrete_loss(self, s, margin = 0.2):
         distF = torch.nn.L1Loss()
@@ -132,6 +171,12 @@ class Transition(nn.Module):
         sparsity_penalty = BETA * self.kl_divergence(rho, rho_hat)
         return sparsity_penalty
 
+    def experiment_loss(self, s):
+        disc_enc = self.encoder(s, True).to('cuda')
+        disc_rho = torch.sum(disc_enc, dim=0, keepdim=True).to('cuda')
+        cont_enc = self.encoder(s, False).to('cuda')
+        cont_rho = torch.sum(cont_enc, dim=0, keepdim=True).to('cuda')
+        return self.kl_divergence(disc_rho, cont_rho)
     ############## TRIPLET LOSS per imparare uno spazio metrico
     # farla con solo l'encoder??
     def triplet_loss_encoder(self, s, s_prime, s_prime_prime, margin):

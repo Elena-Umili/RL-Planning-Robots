@@ -18,8 +18,11 @@ env = gym.make("Acrobot-v1")
 ddqn = Plan_RL_agent(env=env, buffer=er_buf, batch_size=128, load_models= False)
 ddqn.train()
 
-#ddqn.monitor_replanning(horizon=1)
-
-#ddqn.monitor_replanning(horizon=2)
-
-#ddqn.monitor_replanning(horizon=3)
+'''
+##### TEST monitor replanning
+sum = 0
+N = 10
+for i in range(N):
+   sum += ddqn.monitor_replanning(horizon=4)
+print("media su {} esperimenti= {}".format(N, sum/N))
+'''
